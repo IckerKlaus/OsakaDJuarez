@@ -1,0 +1,4 @@
+.local_files
+venv
+__pycache__
+output
