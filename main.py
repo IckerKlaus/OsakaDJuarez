@@ -1,8 +1,8 @@
 import argparse
 import cv2
+import shutil
+import os
 from runner import run_parallel
-from edge_strategies import EDGE_REGISTRY
-from segmentation_strategies import SEGMENT_REGISTRY
 
 
 def parse_args():
@@ -13,7 +13,6 @@ def parse_args():
         help="Input image path"
     )
 
-    # Always running all combinations now
     parser.add_argument(
         "--no_box_filtering",
         action="store_true",
@@ -23,14 +22,21 @@ def parse_args():
     return parser.parse_args()
 
 
+def reset_output():
+    if os.path.exists("output"):
+        shutil.rmtree("output")
+    os.makedirs("output", exist_ok=True)
+
+
 def main():
     args = parse_args()
+
+    reset_output()  # 🔥 reset everything every run
 
     image = cv2.imread(args.image)
     if image is None:
         raise ValueError("Image not found.")
 
-    # Always run all combinations
     run_parallel(
         image,
         disable_box_filtering=args.no_box_filtering

@@ -2,27 +2,34 @@ import cv2
 import numpy as np
 
 
-def apply_bilateral_filter(image: np.ndarray,
-                           diameter: int = 9,
-                           sigma_color: int = 75,
-                           sigma_space: int = 75) -> np.ndarray:
+def apply_gaussian_filter(image: np.ndarray,
+                          kernel_size: int = 5,
+                          sigma: float = 1.0) -> np.ndarray:
     """
-    Smooth textures while preserving edges.
+    Apply Gaussian low-pass filter to reduce noise
+    while preserving useful gradient structure.
     """
-    return cv2.bilateralFilter(image, diameter, sigma_color, sigma_space)
+    if kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be odd")
+
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
 
 
 def apply_clahe_lab(image: np.ndarray,
                     clip_limit: float = 2.0,
                     tile_grid_size: tuple = (8, 8)) -> np.ndarray:
     """
-    Apply CLAHE on the L channel in LAB space to normalize lighting.
+    Apply CLAHE on the L channel in LAB space
+    to normalize illumination.
     """
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
 
-    clahe = cv2.createCLAHE(clipLimit=clip_limit,
-                            tileGridSize=tile_grid_size)
+    clahe = cv2.createCLAHE(
+        clipLimit=clip_limit,
+        tileGridSize=tile_grid_size
+    )
+
     l_clahe = clahe.apply(l)
 
     lab_clahe = cv2.merge((l_clahe, a, b))
@@ -32,7 +39,7 @@ def apply_clahe_lab(image: np.ndarray,
 def convert_color_space(image: np.ndarray,
                         space: str = "LAB") -> np.ndarray:
     """
-    Convert image to LAB or HSV for later processing phases.
+    Convert image to LAB or HSV for later segmentation.
     """
     if space.upper() == "LAB":
         return cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -44,10 +51,13 @@ def convert_color_space(image: np.ndarray,
 
 def phase1_preprocess(image_path: str,
                       output_path: str = None,
-                      color_space: str = "LAB") -> np.ndarray:
+                      color_space: str = "LAB",
+                      gaussian_kernel_size: int = 5,
+                      gaussian_sigma: float = 1.0) -> np.ndarray:
     """
-    Full Phase I pipeline:
-        1. Bilateral filter
+    Phase I preprocessing pipeline:
+
+        1. Gaussian smoothing
         2. CLAHE contrast normalization
         3. Color space conversion
 
@@ -59,17 +69,20 @@ def phase1_preprocess(image_path: str,
     if image is None:
         raise FileNotFoundError(f"Could not read image at {image_path}")
 
-    # Step 1: Bilateral filtering
-    filtered = apply_bilateral_filter(image)
+    # Step 1: Gaussian smoothing
+    smoothed = apply_gaussian_filter(
+        image,
+        kernel_size=gaussian_kernel_size,
+        sigma=gaussian_sigma
+    )
 
-    # Step 2: CLAHE (lighting normalization)
-    enhanced = apply_clahe_lab(filtered)
+    # Step 2: CLAHE
+    enhanced = apply_clahe_lab(smoothed)
 
-    # Step 3: Convert color space (for later segmentation use)
+    # Step 3: Convert color space
     converted = convert_color_space(enhanced, color_space)
 
     if output_path:
         cv2.imwrite(output_path, converted)
 
     return converted
-    

@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-
+import os
 
 # -------------------------------------------------
 # Colorize labels
@@ -150,7 +150,7 @@ def remove_contained(boxes):
 # -------------------------------------------------
 # Percentile filtering
 # -------------------------------------------------
-def percentile_filter(boxes, percentile=20):
+def percentile_filter(boxes, percentile=60):
 
     if not boxes:
         return []
@@ -172,7 +172,7 @@ def draw_bounding_boxes(image, labels, disable_filtering=False):
     if not disable_filtering:
         boxes = merge_boxes(boxes)
         boxes = remove_contained(boxes)
-        boxes = percentile_filter(boxes)
+        boxes = percentile_filter(boxes, percentile=90)
 
     for box in boxes:
         x, y, w, h, _ = box
@@ -185,3 +185,44 @@ def draw_bounding_boxes(image, labels, disable_filtering=False):
         )
 
     return output
+
+# -------------------------------------------------
+# Jaccard similarity (IoU on masks)
+# -------------------------------------------------
+def compute_jaccard(img1, img2):
+
+    img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
+
+    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+    _, bin1 = cv2.threshold(gray1, 127, 255, cv2.THRESH_BINARY)
+    _, bin2 = cv2.threshold(gray2, 127, 255, cv2.THRESH_BINARY)
+
+    bin1 = bin1 > 0
+    bin2 = bin2 > 0
+
+    intersection = np.logical_and(bin1, bin2).sum()
+    union = np.logical_or(bin1, bin2).sum()
+
+    if union == 0:
+        return 0
+
+    return intersection / union
+
+
+# -------------------------------------------------
+# Load ground truth images
+# -------------------------------------------------
+def load_ground_truth(folder="results"):
+
+    images = {}
+
+    if not os.path.exists(folder):
+        return images
+
+    for file in os.listdir(folder):
+        if file.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            images[file] = cv2.imread(os.path.join(folder, file))
+
+    return images
