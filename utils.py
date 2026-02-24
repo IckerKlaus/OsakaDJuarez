@@ -243,6 +243,116 @@ def remove_duplicate_boxes(boxes, duplicate_threshold=0.7):
 
 
 # -------------------------------------------------
+# 3) Diagonal-size grouping
+#
+#    Shared clustering core + two public interfaces:
+#      * filter_by_diagonal_groups  - returns a flat list (used by the
+#                                     draw / postprocess pipeline)
+#      * get_diagonal_groups        - returns labelled groups with a
+#                                     human-readable subfolder name each
+#                                     (used by the crop-saving step)
+# -------------------------------------------------
+
+def _build_diagonal_groups(boxes, gap_ratio):
+    """
+    Private helper: sort boxes by diagonal and split into clusters
+    wherever consecutive diagonals differ by more than gap_ratio.
+
+    Returns a list of lists -- each inner list is a raw group of
+    (x, y, w, h, area) boxes.
+    """
+    diag_boxes = sorted(
+        ((np.sqrt(b[2] ** 2 + b[3] ** 2), b) for b in boxes),
+        key=lambda t: t[0],
+    )
+
+    groups = []
+    current_group = [diag_boxes[0][1]]
+
+    for i in range(1, len(diag_boxes)):
+        prev_diag = diag_boxes[i - 1][0]
+        curr_diag  = diag_boxes[i][0]
+        relative_gap = (curr_diag - prev_diag) / prev_diag if prev_diag > 0 else 0.0
+
+        if relative_gap > gap_ratio:
+            groups.append(current_group)
+            current_group = []
+
+        current_group.append(diag_boxes[i][1])
+
+    groups.append(current_group)
+    return groups
+
+
+def filter_by_diagonal_groups(boxes, gap_ratio=0.3, min_group_size=2):
+    """
+    Group boxes by diagonal size and discard groups that are too small.
+
+    Algorithm
+    ---------
+    1. Compute diagonal = sqrt(w^2 + h^2) for every box.
+    2. Sort boxes by diagonal (ascending).
+    3. Walk the sorted list; start a new group whenever the relative
+       gap between two consecutive diagonals exceeds gap_ratio.
+    4. Discard every group whose member count < min_group_size.
+
+    Args:
+        boxes:          list of (x, y, w, h, area)
+        gap_ratio:      relative diagonal jump that starts a new group.
+        min_group_size: groups smaller than this are discarded.
+
+    Returns:
+        Filtered flat list of boxes (order may differ from input).
+    """
+    if not boxes:
+        return []
+
+    kept = []
+    for group in _build_diagonal_groups(boxes, gap_ratio):
+        if len(group) >= min_group_size:
+            kept.extend(group)
+
+    return kept
+
+
+def get_diagonal_groups(boxes, gap_ratio=0.3, min_group_size=2):
+    """
+    Same clustering as filter_by_diagonal_groups, but returns the groups
+    individually so callers can organise output files into per-group
+    subfolders.
+
+    The subfolder name for each group is derived from the average width and
+    height of its members:
+
+        avg_{mean_w}x{mean_h}px   e.g. avg_142x198px
+
+    Args:
+        boxes:          list of (x, y, w, h, area) -- already post-processed
+        gap_ratio:      same semantics as filter_by_diagonal_groups
+        min_group_size: groups smaller than this are still discarded
+
+    Returns:
+        list of (subfolder_name: str, group_boxes: list)
+        Sorted by ascending average diagonal (smallest group first).
+    """
+    if not boxes:
+        return []
+
+    result = []
+    for group in _build_diagonal_groups(boxes, gap_ratio):
+        if len(group) < min_group_size:
+            continue
+
+        mean_w = int(round(np.mean([b[2] for b in group])))
+        mean_h = int(round(np.mean([b[3] for b in group])))
+        subfolder = f"avg_{mean_w}x{mean_h}px"
+
+        result.append((subfolder, group))
+
+    return result
+
+
+# -------------------------------------------------
 # Full post-processing pipeline
 # -------------------------------------------------
 def postprocess_boxes(
@@ -250,6 +360,8 @@ def postprocess_boxes(
     area_percentile=20,
     iou_merge_threshold=0.3,
     duplicate_threshold=0.7,
+    diagonal_gap_ratio=0.3,
+    min_group_size=2,
 ):
     """
     Apply the full Phase IV post-processing chain in order:
@@ -257,6 +369,7 @@ def postprocess_boxes(
         1b. Remove fully contained boxes
         1c. Iterative IoU merging
          2. Remove near-duplicate boxes
+         3. Diagonal-size grouping filter
 
     All thresholds are configurable.
     """
@@ -264,6 +377,11 @@ def postprocess_boxes(
     boxes = remove_contained(boxes)
     boxes = merge_boxes(boxes, iou_threshold=iou_merge_threshold)
     boxes = remove_duplicate_boxes(boxes, duplicate_threshold=duplicate_threshold)
+    boxes = filter_by_diagonal_groups(
+        boxes,
+        gap_ratio=diagonal_gap_ratio,
+        min_group_size=min_group_size,
+    )
     return boxes
 
 
@@ -277,6 +395,8 @@ def draw_bounding_boxes(
     area_percentile=20,
     iou_merge_threshold=0.3,
     duplicate_threshold=0.7,
+    diagonal_gap_ratio=0.3,
+    min_group_size=2,
 ):
     output = image.copy()
     boxes = extract_boxes(labels)
@@ -287,6 +407,8 @@ def draw_bounding_boxes(
             area_percentile=area_percentile,
             iou_merge_threshold=iou_merge_threshold,
             duplicate_threshold=duplicate_threshold,
+            diagonal_gap_ratio=diagonal_gap_ratio,
+            min_group_size=min_group_size,
         )
 
     for box in boxes:

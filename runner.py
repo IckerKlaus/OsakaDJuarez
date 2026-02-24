@@ -8,6 +8,7 @@ from utils import (
     draw_bounding_boxes,
     extract_boxes,
     postprocess_boxes,
+    get_diagonal_groups,
     load_gt_boxes,
     evaluate_boxes,
 )
@@ -26,6 +27,8 @@ def run_combination(args):
         area_percentile,
         iou_merge_threshold,
         duplicate_threshold,
+        diagonal_gap_ratio,
+        min_group_size,
     ) = args
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -57,11 +60,13 @@ def run_combination(args):
         area_percentile=area_percentile,
         iou_merge_threshold=iou_merge_threshold,
         duplicate_threshold=duplicate_threshold,
+        diagonal_gap_ratio=diagonal_gap_ratio,
+        min_group_size=min_group_size,
     )
     cv2.imwrite(os.path.join(folder, "boxes.png"), boxed)
 
     # -------------------------------------------------
-    # Crop + save product images (with duplicate removal)
+    # Crop + save product images, organised by size group
     # -------------------------------------------------
     result_folder = os.path.join(output_root, "result-images")
     os.makedirs(result_folder, exist_ok=True)
@@ -74,14 +79,31 @@ def run_combination(args):
             area_percentile=area_percentile,
             iou_merge_threshold=iou_merge_threshold,
             duplicate_threshold=duplicate_threshold,
+            diagonal_gap_ratio=diagonal_gap_ratio,
+            min_group_size=min_group_size,
         )
     else:
         final_boxes = raw_boxes
 
-    for i, (x, y, w, h, area) in enumerate(final_boxes):
-        crop = image[y:y + h, x:x + w]
-        filename = f"{edge_name}_{seg_name}_crop_{i:04d}.png"
-        cv2.imwrite(os.path.join(result_folder, filename), crop)
+    # Group surviving boxes by diagonal size so each group gets its own
+    # subfolder named after the average dimensions of that group.
+    # When filtering is disabled we still group, but with min_group_size=1
+    # so no boxes are discarded at this stage.
+    effective_min = min_group_size if not disable_box_filtering else 1
+    groups = get_diagonal_groups(
+        final_boxes,
+        gap_ratio=diagonal_gap_ratio,
+        min_group_size=effective_min,
+    )
+
+    for subfolder_name, group_boxes in groups:
+        group_folder = os.path.join(result_folder, subfolder_name)
+        os.makedirs(group_folder, exist_ok=True)
+
+        for i, (x, y, w, h, area) in enumerate(group_boxes):
+            crop = image[y:y + h, x:x + w]
+            filename = f"{edge_name}_{seg_name}_crop_{i:04d}.png"
+            cv2.imwrite(os.path.join(group_folder, filename), crop)
 
     print(f"Finished: {edge_name} + {seg_name}")
 
@@ -99,12 +121,14 @@ def run_parallel(
     area_percentile=20.0,
     iou_merge_threshold=0.3,
     duplicate_threshold=0.7,
+    diagonal_gap_ratio=0.3,
+    min_group_size=2,
     evaluate=False,
     gt_path=None,
     eval_iou_threshold=0.5,
 ):
     combinations = [
-        # ("laplacian", "watershed"),
+        ("laplacian", "watershed"),
         ("laplacian", "voronoi"),
     ]
 
@@ -118,6 +142,8 @@ def run_parallel(
             area_percentile,
             iou_merge_threshold,
             duplicate_threshold,
+            diagonal_gap_ratio,
+            min_group_size,
         )
         for edge, seg in combinations
     ]
@@ -182,3 +208,4 @@ def _run_evaluation(results, gt_path, eval_iou_threshold):
         print()
 
     print("=" * 60)
+    

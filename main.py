@@ -46,6 +46,27 @@ def parse_args():
             "Boxes above this threshold are considered the same product."
         )
     )
+    parser.add_argument(
+        "--diagonal_gap_ratio",
+        type=float,
+        default=0.3,
+        help=(
+            "Relative diagonal-length gap that separates two size groups "
+            "(default: 0.3). Boxes are sorted by diagonal; a new group starts "
+            "whenever consecutive diagonals differ by more than this fraction. "
+            "Groups with too few members are discarded."
+        )
+    )
+    parser.add_argument(
+        "--min_group_size",
+        type=int,
+        default=2,
+        help=(
+            "Minimum number of boxes a diagonal-size group must contain to be "
+            "kept (default: 2). Groups smaller than this are considered fragment "
+            "crops and are discarded."
+        )
+    )
 
     # ── evaluation ────────────────────────────────────────────────────────────
     parser.add_argument(
@@ -107,6 +128,8 @@ def main():
         area_percentile=args.area_percentile,
         iou_merge_threshold=args.iou_merge_threshold,
         duplicate_threshold=args.duplicate_threshold,
+        diagonal_gap_ratio=args.diagonal_gap_ratio,
+        min_group_size=args.min_group_size,
         evaluate=args.evaluate,
         gt_path=args.gt_path,
         eval_iou_threshold=args.eval_iou_threshold,
