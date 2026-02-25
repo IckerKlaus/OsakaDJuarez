@@ -26,6 +26,7 @@ def run_combination(args):
         disable_box_filtering,
         area_percentile,
         iou_merge_threshold,
+        aspect_ratio_sigma,
         duplicate_threshold,
         diagonal_gap_ratio,
         min_group_size,
@@ -59,6 +60,7 @@ def run_combination(args):
         disable_filtering=disable_box_filtering,
         area_percentile=area_percentile,
         iou_merge_threshold=iou_merge_threshold,
+        aspect_ratio_sigma=aspect_ratio_sigma,
         duplicate_threshold=duplicate_threshold,
         diagonal_gap_ratio=diagonal_gap_ratio,
         min_group_size=min_group_size,
@@ -78,6 +80,7 @@ def run_combination(args):
             raw_boxes,
             area_percentile=area_percentile,
             iou_merge_threshold=iou_merge_threshold,
+            aspect_ratio_sigma=aspect_ratio_sigma,
             duplicate_threshold=duplicate_threshold,
             diagonal_gap_ratio=diagonal_gap_ratio,
             min_group_size=min_group_size,
@@ -120,6 +123,7 @@ def run_parallel(
     disable_box_filtering=False,
     area_percentile=20.0,
     iou_merge_threshold=0.3,
+    aspect_ratio_sigma=2.0,
     duplicate_threshold=0.7,
     diagonal_gap_ratio=0.3,
     min_group_size=2,
@@ -129,7 +133,7 @@ def run_parallel(
 ):
     combinations = [
         ("laplacian", "watershed"),
-        ("laplacian", "voronoi"),
+        # ("laplacian", "voronoi"),
     ]
 
     args_list = [
@@ -141,6 +145,7 @@ def run_parallel(
             disable_box_filtering,
             area_percentile,
             iou_merge_threshold,
+            aspect_ratio_sigma,
             duplicate_threshold,
             diagonal_gap_ratio,
             min_group_size,
@@ -208,4 +213,3 @@ def _run_evaluation(results, gt_path, eval_iou_threshold):
         print()
 
     print("=" * 60)
-    

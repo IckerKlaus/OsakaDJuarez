@@ -38,6 +38,16 @@ def parse_args():
         help="IoU threshold for merging overlapping boxes (default: 0.3)."
     )
     parser.add_argument(
+        "--aspect_ratio_sigma",
+        type=float,
+        default=2.0,
+        help=(
+            "Number of standard deviations from the mean aspect ratio "
+            "allowed before a box is discarded (default: 2.0). "
+            "Applied after merging and before duplicate removal."
+        )
+    )
+    parser.add_argument(
         "--duplicate_threshold",
         type=float,
         default=0.7,
@@ -127,6 +137,7 @@ def main():
         disable_box_filtering=args.no_box_filtering,
         area_percentile=args.area_percentile,
         iou_merge_threshold=args.iou_merge_threshold,
+        aspect_ratio_sigma=args.aspect_ratio_sigma,
         duplicate_threshold=args.duplicate_threshold,
         diagonal_gap_ratio=args.diagonal_gap_ratio,
         min_group_size=args.min_group_size,

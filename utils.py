@@ -2,6 +2,41 @@ import numpy as np
 import cv2
 import os
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+# -------------------------------------------------
+# Vectorized IoU helpers (avoid Python-level O(n²))
+# -------------------------------------------------
+def _boxes_to_arrays(boxes):
+    """Convert list of (x, y, w, h, area) to NumPy column arrays."""
+    arr = np.array(boxes, dtype=np.float64)          # (N, 5)
+    x1 = arr[:, 0]
+    y1 = arr[:, 1]
+    x2 = arr[:, 0] + arr[:, 2]
+    y2 = arr[:, 1] + arr[:, 3]
+    area = arr[:, 4]
+    return x1, y1, x2, y2, area
+
+
+def _iou_matrix(boxes):
+    """Return an (N, N) IoU matrix computed entirely in NumPy."""
+    x1, y1, x2, y2, area = _boxes_to_arrays(boxes)
+
+    # Broadcast pairwise intersection coordinates
+    inter_x1 = np.maximum(x1[:, None], x1[None, :])
+    inter_y1 = np.maximum(y1[:, None], y1[None, :])
+    inter_x2 = np.minimum(x2[:, None], x2[None, :])
+    inter_y2 = np.minimum(y2[:, None], y2[None, :])
+
+    inter_w = np.maximum(0, inter_x2 - inter_x1)
+    inter_h = np.maximum(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    union = area[:, None] + area[None, :] - inter_area
+    union = np.where(union == 0, 1, union)  # avoid division by zero
+
+    return inter_area / union
 
 # -------------------------------------------------
 # Colorize labels
@@ -106,33 +141,30 @@ def remove_contained(boxes):
         AND boxA.x2 <= boxB.x2  AND  boxA.y2 <= boxB.y2
     where A != B.
 
+    Uses vectorized NumPy broadcasting for O(n²) comparisons.
+
     Returns:
         List with contained boxes removed.
     """
-    result = []
+    if len(boxes) <= 1:
+        return list(boxes)
 
-    for i, boxA in enumerate(boxes):
-        ax1, ay1 = boxA[0], boxA[1]
-        ax2, ay2 = boxA[0] + boxA[2], boxA[1] + boxA[3]
+    x1, y1, x2, y2, _ = _boxes_to_arrays(boxes)
 
-        is_contained = False
+    # (i, j): is box i contained in box j?
+    contained = (
+        (x1[:, None] >= x1[None, :]) &
+        (y1[:, None] >= y1[None, :]) &
+        (x2[:, None] <= x2[None, :]) &
+        (y2[:, None] <= y2[None, :])
+    )
+    # A box trivially contains itself — ignore the diagonal
+    np.fill_diagonal(contained, False)
 
-        for j, boxB in enumerate(boxes):
-            if i == j:
-                continue
+    # A box is contained if ANY other box fully encloses it
+    is_contained = contained.any(axis=1)
 
-            bx1, by1 = boxB[0], boxB[1]
-            bx2, by2 = boxB[0] + boxB[2], boxB[1] + boxB[3]
-
-            if ax1 >= bx1 and ay1 >= by1 and ax2 <= bx2 and ay2 <= by2:
-                # boxA is fully inside boxB — drop it
-                is_contained = True
-                break
-
-        if not is_contained:
-            result.append(boxA)
-
-    return result
+    return [b for b, drop in zip(boxes, is_contained) if not drop]
 
 
 # -------------------------------------------------
@@ -152,6 +184,8 @@ def merge_boxes(boxes, iou_threshold=0.3):
     bounding rectangle is the minimal axis-aligned rectangle covering
     both boxes.  Passes repeat until no further merges occur.
 
+    Uses a vectorized IoU matrix each pass for speed.
+
     Args:
         boxes:         list of (x, y, w, h, area)
         iou_threshold: minimum IoU to trigger a merge
@@ -165,32 +199,33 @@ def merge_boxes(boxes, iou_threshold=0.3):
     while changed:
         changed = False
         n = len(boxes)
-        used = [False] * n
+        if n <= 1:
+            break
+
+        iou_mat = _iou_matrix(boxes)
+        np.fill_diagonal(iou_mat, 0)           # ignore self
+
+        used = np.zeros(n, dtype=bool)
         new_boxes = []
 
         for i in range(n):
             if used[i]:
                 continue
 
-            # Find all boxes that directly overlap with boxes[i]
-            # (evaluated against the ORIGINAL boxes[i], not a growing merge)
-            group = [i]
-            for j in range(i + 1, n):
-                if used[j]:
-                    continue
-                if compute_iou(boxes[i], boxes[j]) > iou_threshold:
-                    group.append(j)
+            # Indices that overlap with i above threshold
+            overlaps = np.where((~used) & (iou_mat[i] > iou_threshold))[0]
+            # Include i itself
+            group = np.concatenate(([i], overlaps))
 
             if len(group) > 1:
-                # Merge all boxes in the group into one bounding rectangle
-                x1 = min(boxes[k][0] for k in group)
-                y1 = min(boxes[k][1] for k in group)
-                x2 = max(boxes[k][0] + boxes[k][2] for k in group)
-                y2 = max(boxes[k][1] + boxes[k][3] for k in group)
-                w, h = x2 - x1, y2 - y1
-                new_boxes.append((x1, y1, w, h, w * h))
-                for k in group:
-                    used[k] = True
+                arr = np.array([boxes[k] for k in group])
+                x1 = arr[:, 0].min()
+                y1 = arr[:, 1].min()
+                x2 = (arr[:, 0] + arr[:, 2]).max()
+                y2 = (arr[:, 1] + arr[:, 3]).max()
+                w, h = int(x2 - x1), int(y2 - y1)
+                new_boxes.append((int(x1), int(y1), w, h, w * h))
+                used[group] = True
                 changed = True
             else:
                 new_boxes.append(boxes[i])
@@ -199,6 +234,42 @@ def merge_boxes(boxes, iou_threshold=0.3):
         boxes = new_boxes
 
     return boxes
+
+
+# -------------------------------------------------
+# 1d) Aspect-ratio outlier filter
+#     Removes boxes whose aspect ratio (w/h) lies
+#     more than `max_sigma` standard deviations from
+#     the mean aspect ratio of all boxes.
+# -------------------------------------------------
+def aspect_ratio_filter(boxes, max_sigma=2.0):
+    """
+    Remove boxes whose aspect ratio is too far from the population mean.
+
+    The aspect ratio of each box is computed as w / h.  Boxes whose
+    aspect ratio differs from the mean by more than `max_sigma` standard
+    deviations are discarded.
+
+    Args:
+        boxes:     list of (x, y, w, h, area)
+        max_sigma: number of standard deviations to use as the cutoff
+
+    Returns:
+        Filtered list of boxes.
+    """
+    if len(boxes) < 2:
+        return boxes
+
+    ratios = np.array([b[2] / b[3] if b[3] != 0 else 0.0 for b in boxes],
+                      dtype=np.float64)
+    mean = ratios.mean()
+    std = ratios.std()
+
+    if std == 0:
+        return boxes
+
+    return [b for b, r in zip(boxes, ratios)
+            if abs(r - mean) <= max_sigma * std]
 
 
 # -------------------------------------------------
@@ -212,7 +283,7 @@ def remove_duplicate_boxes(boxes, duplicate_threshold=0.7):
     each other (IoU > duplicate_threshold).  When two duplicates are found
     the larger box (by area) is retained.
 
-    This prevents saving multiple cropped images of the same product.
+    Uses a vectorized IoU matrix for the heavy O(n²) comparison.
 
     Args:
         boxes:               list of (x, y, w, h, area)
@@ -229,15 +300,23 @@ def remove_duplicate_boxes(boxes, duplicate_threshold=0.7):
     # largest by construction (first encountered wins).
     boxes = sorted(boxes, key=lambda b: b[4], reverse=True)
 
+    n = len(boxes)
+    if n == 1:
+        return boxes
+
+    iou_mat = _iou_matrix(boxes)
+    np.fill_diagonal(iou_mat, 0)
+
+    suppressed = np.zeros(n, dtype=bool)
     kept = []
-    for i, boxA in enumerate(boxes):
-        is_dup = False
-        for boxB in kept:
-            if compute_iou(boxA, boxB) > duplicate_threshold:
-                is_dup = True
-                break
-        if not is_dup:
-            kept.append(boxA)
+
+    for i in range(n):
+        if suppressed[i]:
+            continue
+        kept.append(boxes[i])
+        # Suppress every smaller box that is a duplicate of i
+        dups = np.where((~suppressed) & (iou_mat[i] > duplicate_threshold))[0]
+        suppressed[dups] = True
 
     return kept
 
@@ -359,6 +438,7 @@ def postprocess_boxes(
     boxes,
     area_percentile=20,
     iou_merge_threshold=0.3,
+    aspect_ratio_sigma=2.0,
     duplicate_threshold=0.7,
     diagonal_gap_ratio=0.3,
     min_group_size=2,
@@ -368,6 +448,7 @@ def postprocess_boxes(
         1a. Percentile-based area filtering
         1b. Remove fully contained boxes
         1c. Iterative IoU merging
+        1d. Aspect-ratio outlier filtering
          2. Remove near-duplicate boxes
          3. Diagonal-size grouping filter
 
@@ -376,6 +457,7 @@ def postprocess_boxes(
     boxes = percentile_filter(boxes, percentile=area_percentile)
     boxes = remove_contained(boxes)
     boxes = merge_boxes(boxes, iou_threshold=iou_merge_threshold)
+    boxes = aspect_ratio_filter(boxes, max_sigma=aspect_ratio_sigma)
     boxes = remove_duplicate_boxes(boxes, duplicate_threshold=duplicate_threshold)
     boxes = filter_by_diagonal_groups(
         boxes,
@@ -394,6 +476,7 @@ def draw_bounding_boxes(
     disable_filtering=False,
     area_percentile=20,
     iou_merge_threshold=0.3,
+    aspect_ratio_sigma=2.0,
     duplicate_threshold=0.7,
     diagonal_gap_ratio=0.3,
     min_group_size=2,
@@ -406,6 +489,7 @@ def draw_bounding_boxes(
             boxes,
             area_percentile=area_percentile,
             iou_merge_threshold=iou_merge_threshold,
+            aspect_ratio_sigma=aspect_ratio_sigma,
             duplicate_threshold=duplicate_threshold,
             diagonal_gap_ratio=diagonal_gap_ratio,
             min_group_size=min_group_size,
