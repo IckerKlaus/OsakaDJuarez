@@ -23,6 +23,16 @@ def parse_args():
         help="Disable all bounding-box merging and filtering."
     )
     parser.add_argument(
+        "--max_box_ratio",
+        type=float,
+        default=0.9,
+        help=(
+            "Maximum fraction of image area a single box may cover "
+            "(default: 0.9). Boxes larger than this are discarded as "
+            "background. Applied before all other filters."
+        )
+    )
+    parser.add_argument(
         "--area_percentile",
         type=float,
         default=20.0,
@@ -135,6 +145,7 @@ def main():
     run_parallel(
         image,
         disable_box_filtering=args.no_box_filtering,
+        max_box_ratio=args.max_box_ratio,
         area_percentile=args.area_percentile,
         iou_merge_threshold=args.iou_merge_threshold,
         aspect_ratio_sigma=args.aspect_ratio_sigma,
